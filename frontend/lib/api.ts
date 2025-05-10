@@ -85,7 +85,13 @@ export function sendWebSocketMessage(type: string, data: any) {
   const message = { type, data }
 
   if (isConnected && socket) {
-    socket.send(JSON.stringify(message))
+    try {
+      socket.send(JSON.stringify(message))
+    } catch (error) {
+      console.error("Error sending WebSocket message:", error)
+      // Queue message if sending fails
+      messageQueue.push(message)
+    }
   } else {
     // Queue message if not connected
     messageQueue.push(message)
@@ -156,30 +162,42 @@ export async function synthesizeSpeech(text: string, voice: string): Promise<{ a
 
 // Helper function to convert base64 to Blob
 export function base64ToBlob(base64: string, mimeType: string) {
-  const byteCharacters = atob(base64)
-  const byteArrays = []
+  try {
+    const byteCharacters = atob(base64)
+    const byteArrays = []
 
-  for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-    const slice = byteCharacters.slice(offset, offset + 512)
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512)
 
-    const byteNumbers = new Array(slice.length)
-    for (let i = 0; i < slice.length; i++) {
-      byteNumbers[i] = slice.charCodeAt(i)
+      const byteNumbers = new Array(slice.length)
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i)
+      }
+
+      const byteArray = new Uint8Array(byteNumbers)
+      byteArrays.push(byteArray)
     }
 
-    const byteArray = new Uint8Array(byteNumbers)
-    byteArrays.push(byteArray)
+    return new Blob(byteArrays, { type: mimeType })
+  } catch (error) {
+    console.error("Error converting base64 to Blob:", error)
+    // Return an empty blob in case of error
+    return new Blob([], { type: mimeType })
   }
-
-  return new Blob(byteArrays, { type: mimeType })
 }
 
 // Helper function to convert base64 to ArrayBuffer
 export function base64ToArrayBuffer(base64: string) {
-  const binaryString = atob(base64)
-  const bytes = new Uint8Array(binaryString.length)
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i)
+  try {
+    const binaryString = atob(base64)
+    const bytes = new Uint8Array(binaryString.length)
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i)
+    }
+    return bytes.buffer
+  } catch (error) {
+    console.error("Error converting base64 to ArrayBuffer:", error)
+    // Return an empty buffer in case of error
+    return new ArrayBuffer(0)
   }
-  return bytes.buffer
 }
