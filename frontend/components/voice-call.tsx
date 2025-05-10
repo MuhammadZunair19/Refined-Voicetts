@@ -18,8 +18,8 @@ import { cn, formatTime } from "@/lib/utils"
 // Define script types and their descriptions
 const SCRIPT_TYPES = [
   {
-    id: "reliant_bpo",
-    name: "Reliant BPO",
+    id: "truck_dispatch",
+    name: "TRUCK DISPATCH",
     description: "Fronting Only - Qualify leads and transfer to closers",
   },
   {
@@ -48,7 +48,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const [isActive, setIsActive] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [serverState, setServerState] = useState<string>("Idle")
-  const [selectedScriptType, setSelectedScriptType] = useState<string>("reliant_bpo")
+  const [selectedScriptType, setSelectedScriptType] = useState<string>("truck_dispatch")
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [callDuration, setCallDuration] = useState(0)
   const callDurationTimerRef = useRef<NodeJS.Timeout | null>(null)
