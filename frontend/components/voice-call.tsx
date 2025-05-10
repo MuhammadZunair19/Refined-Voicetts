@@ -1,16 +1,16 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Mic, MicOff, Volume2, Loader2, VolumeX, Sparkles, ChevronDown, Phone } from "lucide-react"
+import { Mic, MicOff, Volume2, Loader2, VolumeX, Sparkles, ChevronDown, Phone } from 'lucide-react'
 import { createSpeechRecognition } from "@/lib/speech-recognition"
 import {
-  synthesizeSpeech,
   sendConversationMessage,
   type Message,
   initializeWebSocket,
   onWebSocketMessage,
   notifyPlaybackFinished,
   setScriptType,
+  base64ToArrayBuffer,
 } from "@/lib/api"
 import { toast } from "@/hooks/use-toast"
 import { cn, formatTime } from "@/lib/utils"
@@ -61,7 +61,8 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const conversationEndRef = useRef<HTMLDivElement>(null)
   const keepAliveIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const webSocketRef = useRef<WebSocket | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const audioContextRef = useRef<AudioContext | null>(null)
 
   // Auto-scroll to bottom when conversation updates
   useEffect(() => {
@@ -72,7 +73,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
   // Initialize WebSocket connection
   useEffect(() => {
-    webSocketRef.current = initializeWebSocket({
+    initializeWebSocket({
       onOpen: () => {
         console.log("WebSocket connected")
         toast({
@@ -128,6 +129,55 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
         }
       } else if (data.type === "transcription") {
         setTranscription(data.text)
+      } else if (data.type === "response") {
+        // Add assistant response to conversation
+        setConversationHistory((prev) => [...prev, { role: "assistant", content: data.text }])
+        if (data.conversationId) {
+          setConversationId(data.conversationId)
+        }
+      } else if (data.type === "audio_chunk") {
+        // Handle audio chunks from the backend
+        if (audioRef.current) {
+          try {
+            // Create a blob from the base64 audio chunk
+            const audioBlob = new Blob([base64ToArrayBuffer(data.audio)], { type: "audio/wav" })
+            audioChunksRef.current.push(audioBlob)
+
+            // If this is the first chunk, start playing
+            if (!isSpeaking && audioChunksRef.current.length === 1) {
+              const audioUrl = URL.createObjectURL(audioBlob)
+              audioRef.current.src = audioUrl
+              audioRef.current.onplay = () => {
+                setIsSpeaking(true)
+                stopRecognition()
+              }
+              audioRef.current.onended = handleAudioEnded
+              audioRef.current.play().catch((err) => {
+                console.error("Error playing audio:", err)
+                handleAudioEnded()
+              })
+            }
+          } catch (e) {
+            console.error("Error processing audio chunk:", e)
+          }
+        }
+      } else if (data.type === "audio_end") {
+        // Audio streaming is complete
+        console.log("Audio streaming complete")
+
+        // If we have multiple chunks, combine them and play
+        if (audioChunksRef.current.length > 1) {
+          const combinedBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
+          const audioUrl = URL.createObjectURL(combinedBlob)
+
+          if (audioRef.current) {
+            audioRef.current.src = audioUrl
+            audioRef.current.play().catch((err) => {
+              console.error("Error playing combined audio:", err)
+              handleAudioEnded()
+            })
+          }
+        }
       } else if (data.type === "info") {
         toast({
           title: "Info",
@@ -144,10 +194,6 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
     return () => {
       unsubscribe()
-      if (webSocketRef.current) {
-        webSocketRef.current.close()
-        webSocketRef.current = null
-      }
     }
   }, [])
 
@@ -353,6 +399,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
         }
 
         restartTimeoutRef.current = setTimeout(() => {
+          console.log("Restarting recognition after it ended unexpectedly")
           setupAndStartRecognition()
         }, 1000)
       }
@@ -458,84 +505,14 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     // Clear transcription
     setTranscription("")
 
+    // Reset audio chunks for the next response
+    audioChunksRef.current = []
+
     try {
-      // Use the updated API function
-      const data = await sendConversationMessage(currentText, conversationId)
+      // Send the message to the server
+      await sendConversationMessage(currentText, conversationId)
 
-      // Add assistant response to conversation
-      setConversationHistory((prev) => [...prev, { role: "assistant", content: data.text }])
-
-      setConversationId(data.conversationId)
-
-      // Only proceed with audio if not muted
-      if (!isMuted && isActive) {
-        try {
-          // Stop any currently playing audio
-          if (audioRef.current) {
-            audioRef.current.pause()
-            audioRef.current.src = ""
-          }
-
-          // Get streaming audio URL
-          const { audioUrl: newAudioUrl } = await synthesizeSpeech(data.text, "")
-          setAudioUrl(newAudioUrl)
-
-          // Play the audio automatically
-          if (audioRef.current) {
-            // Set up event listeners
-            audioRef.current.onplay = () => {
-              setIsSpeaking(true)
-              console.log("Audio started playing")
-              // Explicitly stop recognition when audio starts playing
-              stopRecognition()
-            }
-
-            audioRef.current.onended = handleAudioEnded
-            audioRef.current.onerror = (e) => {
-              console.error("Audio playback error:", e)
-              setIsSpeaking(false)
-              handleAudioEnded()
-            }
-
-            // Create a new audio element each time to avoid state issues
-            audioRef.current.src = newAudioUrl
-
-            // Start playback
-            const playPromise = audioRef.current.play()
-
-            // Handle play promise (required for some browsers)
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => {
-                  console.log("Audio playback started successfully")
-                })
-                .catch((err) => {
-                  console.error("Audio playback failed:", err)
-                  setIsSpeaking(false)
-                  handleAudioEnded()
-                })
-            }
-          }
-        } catch (audioError) {
-          console.error("Error with audio playback:", audioError)
-          setIsSpeaking(false)
-
-          // If there's an error with audio, still restart listening
-          setTimeout(() => {
-            if (isActive && !isMuted) {
-              setupAndStartRecognition()
-            }
-          }, 1000)
-        }
-      } else {
-        // If muted, don't play audio but still restart listening if needed
-        console.log("Audio muted, skipping playback")
-        setTimeout(() => {
-          if (isActive && !isMuted) {
-            setupAndStartRecognition()
-          }
-        }, 1000)
-      }
+      // Note: We don't need to handle the response here as it will come through WebSocket
     } catch (error: any) {
       console.error("Conversation error:", error)
       toast({
@@ -559,6 +536,9 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     console.log("Audio playback ended")
     setIsSpeaking(false)
 
+    // Clear audio chunks
+    audioChunksRef.current = []
+
     // Notify the server that audio playback has finished
     notifyPlaybackFinished()
 
@@ -566,6 +546,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     if (isActive && !isMuted) {
       // Add a delay before restarting recognition to prevent feedback
       setTimeout(() => {
+        console.log("Restarting recognition after audio ended")
         setupAndStartRecognition()
       }, 1000)
     }
@@ -843,4 +824,3 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     </div>
   )
 }
-
