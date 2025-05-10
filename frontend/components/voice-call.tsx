@@ -64,6 +64,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const audioChunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
   const isAudioProcessingRef = useRef<boolean>(false)
+  const recognitionStartTimeRef = useRef<number>(0)
 
   // Auto-scroll to bottom when conversation updates
   useEffect(() => {
@@ -109,12 +110,19 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     const unsubscribe = onWebSocketMessage((data) => {
       try {
         if (data.type === "state") {
+          const prevState = serverState
           setServerState(data.state)
+          console.log(`Server state changed: ${prevState} -> ${data.state}`)
 
           // Update our UI state based on server state
           if (data.state === "Processing") {
             setIsProcessing(true)
             setIsListening(false)
+            
+            // Make sure we're not in a speaking state
+            if (isSpeaking) {
+              setIsSpeaking(false)
+            }
           } else if (data.state === "Speaking") {
             setIsProcessing(false)
             // Don't set isSpeaking here - we'll set it when we actually play the audio
@@ -124,6 +132,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
             // Restart listening if we're active, not muted, not speaking, and not processing audio
             if (isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+              console.log("Server is idle, restarting recognition")
               setTimeout(() => {
                 setupAndStartRecognition()
               }, 1000)
@@ -214,6 +223,16 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
             description: data.message,
             variant: "destructive",
           })
+          
+          // Reset audio processing state on error
+          isAudioProcessingRef.current = false
+          
+          // Try to restart listening if we're not already
+          if (isActive && !isMuted && !isListening && !isSpeaking) {
+            setTimeout(() => {
+              setupAndStartRecognition()
+            }, 2000)
+          }
         }
       } catch (error) {
         console.error("Error handling WebSocket message:", error)
@@ -282,6 +301,21 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     }
   }, [isSpeaking])
 
+  // Add recovery mechanism to ensure we're always listening when we should be
+  useEffect(() => {
+    // If we're active but not listening, speaking, or processing, restart listening
+    if (isActive && !isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current && !isMuted) {
+      console.log("Recovery: We should be listening but we're not. Restarting recognition...")
+      
+      // Add a small delay to avoid rapid restarts
+      const recoveryTimeout = setTimeout(() => {
+        setupAndStartRecognition()
+      }, 2000)
+      
+      return () => clearTimeout(recoveryTimeout)
+    }
+  }, [isActive, isListening, isSpeaking, isProcessing, isMuted])
+
   // Track call duration
   useEffect(() => {
     if (isActive) {
@@ -307,6 +341,13 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   }, [isActive])
 
   const setupAndStartRecognition = () => {
+    // Check if we're already listening
+    if (isListening && recognitionRef.current) {
+      console.log("Recognition is already active, not starting again")
+      return
+    }
+    
+    // Check if we should be listening at all
     if (!isActive || isMuted || isSpeaking || isProcessing || isAudioProcessingRef.current) {
       console.log("Not starting recognition because:", {
         isActive,
@@ -318,6 +359,17 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       return
     }
 
+    // Check if we've tried to start recognition too recently (prevent rapid restarts)
+    const now = Date.now()
+    if (now - recognitionStartTimeRef.current < 1000) {
+      console.log("Tried to start recognition too soon after previous attempt, delaying")
+      setTimeout(() => {
+        setupAndStartRecognition()
+      }, 1000)
+      return
+    }
+    
+    recognitionStartTimeRef.current = now
     console.log("Setting up speech recognition")
 
     // Clean up any existing recognition
@@ -568,7 +620,16 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
   const handleAudioEnded = () => {
     console.log("Audio playback ended")
+    
+    // Update state
     setIsSpeaking(false)
+    
+    // Clear audio resources
+    if (audioRef.current) {
+      const oldSrc = audioRef.current.src
+      audioRef.current.src = ""
+      URL.revokeObjectURL(oldSrc)
+    }
 
     // Clear audio chunks
     audioChunksRef.current = []
@@ -579,10 +640,21 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
     // Auto-start listening again after AI finishes speaking if we're still active
     if (isActive && !isMuted) {
+      console.log("Restarting recognition after audio ended")
+      
       // Add a delay before restarting recognition to prevent feedback
       setTimeout(() => {
-        console.log("Restarting recognition after audio ended")
-        setupAndStartRecognition()
+        if (!isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current) {
+          console.log("Delayed restart of recognition after audio ended")
+          setupAndStartRecognition()
+        } else {
+          console.log("Skipping delayed restart because state changed:", {
+            isListening,
+            isSpeaking,
+            isProcessing,
+            isAudioProcessing: isAudioProcessingRef.current
+          })
+        }
       }, 1000)
     }
   }
