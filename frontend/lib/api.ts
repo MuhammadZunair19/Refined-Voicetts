@@ -132,71 +132,30 @@ export async function sendConversationMessage(
   message: string,
   conversationId?: string | null,
 ): Promise<{ text: string; conversationId: string }> {
-  return new Promise((resolve, reject) => {
-    // Create a one-time message handler
-    const messageHandler = (data: any) => {
-      if (data.type === "response") {
-        // Remove this one-time handler
-        onMessageCallbacks = onMessageCallbacks.filter((cb) => cb !== messageHandler)
+  // Set the message as context
+  setContext(message)
 
-        // Resolve with the response
-        resolve({
-          text: data.text,
-          conversationId: conversationId || "websocket-conversation",
-        })
-      } else if (data.type === "error") {
-        // Remove this one-time handler
-        onMessageCallbacks = onMessageCallbacks.filter((cb) => cb !== messageHandler)
+  // Simulate an empty audio message to trigger processing
+  // This is a workaround since the Python backend expects audio data
+  const emptyAudioData = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" // Empty WAV file in base64
+  sendAudioData(emptyAudioData)
 
-        // Reject with the error
-        reject(new Error(data.message))
-      }
-    }
-
-    // Register the message handler
-    onMessageCallbacks.push(messageHandler)
-
-    // Send the message as context (since we're not actually sending audio here)
-    setContext(message)
-
-    // Simulate an empty audio message to trigger processing
-    // This is a workaround since the Python backend expects audio data
-    const emptyAudioData = "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" // Empty WAV file in base64
-    sendAudioData(emptyAudioData)
+  // Return a resolved promise since we'll handle the response via WebSocket callbacks
+  return Promise.resolve({
+    text: "",
+    conversationId: conversationId || "websocket-conversation",
   })
 }
 
 // Synthesize speech (compatibility function for the existing component)
 export async function synthesizeSpeech(text: string, voice: string): Promise<{ audioUrl: string }> {
-  return new Promise((resolve, reject) => {
-    // Create a one-time message handler
-    const messageHandler = (data: any) => {
-      if (data.type === "audio") {
-        // Remove this one-time handler
-        onMessageCallbacks = onMessageCallbacks.filter((cb) => cb !== messageHandler)
-
-        // Convert base64 audio to blob URL
-        const audioBlob = base64ToBlob(data.audio, "audio/wav")
-        const audioUrl = URL.createObjectURL(audioBlob)
-
-        // Resolve with the audio URL
-        resolve({ audioUrl })
-      } else if (data.type === "error") {
-        // Remove this one-time handler
-        onMessageCallbacks = onMessageCallbacks.filter((cb) => cb !== messageHandler)
-
-        // Reject with the error
-        reject(new Error(data.message))
-      }
-    }
-
-    // Register the message handler
-    onMessageCallbacks.push(messageHandler)
-  })
+  // This function is now a placeholder since audio comes via WebSocket
+  console.log("Audio will be streamed via WebSocket chunks")
+  return Promise.resolve({ audioUrl: "" })
 }
 
 // Helper function to convert base64 to Blob
-function base64ToBlob(base64: string, mimeType: string) {
+export function base64ToBlob(base64: string, mimeType: string) {
   const byteCharacters = atob(base64)
   const byteArrays = []
 
@@ -215,3 +174,12 @@ function base64ToBlob(base64: string, mimeType: string) {
   return new Blob(byteArrays, { type: mimeType })
 }
 
+// Helper function to convert base64 to ArrayBuffer
+export function base64ToArrayBuffer(base64: string) {
+  const binaryString = atob(base64)
+  const bytes = new Uint8Array(binaryString.length)
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i)
+  }
+  return bytes.buffer
+}
