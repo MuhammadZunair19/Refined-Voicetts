@@ -65,6 +65,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const audioContextRef = useRef<AudioContext | null>(null)
   const isAudioProcessingRef = useRef<boolean>(false)
   const recognitionStartTimeRef = useRef<number>(0)
+  const waitingForAudioEndRef = useRef<boolean>(false)
 
   // Auto-scroll to bottom when conversation updates
   useEffect(() => {
@@ -131,7 +132,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
             // Don't reset isSpeaking here - we'll handle that when audio playback ends
 
             // Restart listening if we're active, not muted, not speaking, and not processing audio
-            if (isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+            if (isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
               console.log("Server is idle, restarting recognition")
               setTimeout(() => {
                 setupAndStartRecognition()
@@ -149,9 +150,12 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
           
           // Mark that we're collecting audio chunks
           isAudioProcessingRef.current = true
+          waitingForAudioEndRef.current = true
           
           // Reset audio chunks for the new response
           audioChunksRef.current = []
+          
+          console.log("Received response, waiting for audio chunks...")
         } else if (data.type === "audio_chunk") {
           // Just collect the audio chunk, don't play it yet
           try {
@@ -163,17 +167,25 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
             
             const audioBlob = new Blob([audioBuffer], { type: "audio/wav" })
             audioChunksRef.current.push(audioBlob)
+            console.log(`Collected audio chunk #${audioChunksRef.current.length}`)
           } catch (e) {
             console.error("Error processing audio chunk:", e)
           }
         } else if (data.type === "audio_end") {
           // Now that we have all chunks, combine and play them
-          console.log("Audio streaming complete, playing combined audio")
+          console.log(`Audio streaming complete, playing ${audioChunksRef.current.length} combined chunks`)
+          waitingForAudioEndRef.current = false
           
           if (audioChunksRef.current.length > 0 && audioRef.current) {
             try {
               // Combine all chunks into a single blob
               const combinedBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
+              
+              // Clean up any previous audio URL
+              if (audioRef.current.src) {
+                URL.revokeObjectURL(audioRef.current.src)
+              }
+              
               const audioUrl = URL.createObjectURL(combinedBlob)
 
               // Set up audio element
@@ -226,6 +238,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
           
           // Reset audio processing state on error
           isAudioProcessingRef.current = false
+          waitingForAudioEndRef.current = false
           
           // Try to restart listening if we're not already
           if (isActive && !isMuted && !isListening && !isSpeaking) {
@@ -237,6 +250,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       } catch (error) {
         console.error("Error handling WebSocket message:", error)
         isAudioProcessingRef.current = false
+        waitingForAudioEndRef.current = false
       }
     })
 
@@ -247,13 +261,13 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
   // Initialize speech recognition and set up keep-alive
   useEffect(() => {
-    if (typeof window !== "undefined" && isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+    if (typeof window !== "undefined" && isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
       console.log("Setting up initial speech recognition")
       setupAndStartRecognition()
 
       // Set up a keep-alive interval
       keepAliveIntervalRef.current = setInterval(() => {
-        if (!isListening && !isProcessing && !isSpeaking && isActive && !isMuted && !isAudioProcessingRef.current) {
+        if (!isListening && !isProcessing && !isSpeaking && isActive && !isMuted && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
           console.log("Keep-alive: restarting speech recognition")
           setupAndStartRecognition()
         }
@@ -280,7 +294,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
         audioRef.current.pause()
         setIsSpeaking(false)
       }
-    } else if (isActive && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
+    } else if (isActive && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
       // When unmuted, start recognition only if not speaking
       console.log("Unmuted, starting recognition")
       setupAndStartRecognition()
@@ -292,7 +306,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     if (isSpeaking) {
       console.log("AI is speaking - stopping microphone")
       stopRecognition()
-    } else if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
+    } else if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
       console.log("AI finished speaking - restarting microphone")
       // Small delay to ensure audio playback is fully complete
       setTimeout(() => {
@@ -304,7 +318,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   // Add recovery mechanism to ensure we're always listening when we should be
   useEffect(() => {
     // If we're active but not listening, speaking, or processing, restart listening
-    if (isActive && !isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current && !isMuted) {
+    if (isActive && !isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current && !waitingForAudioEndRef.current && !isMuted) {
       console.log("Recovery: We should be listening but we're not. Restarting recognition...")
       
       // Add a small delay to avoid rapid restarts
@@ -348,13 +362,14 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     }
     
     // Check if we should be listening at all
-    if (!isActive || isMuted || isSpeaking || isProcessing || isAudioProcessingRef.current) {
+    if (!isActive || isMuted || isSpeaking || isProcessing || isAudioProcessingRef.current || waitingForAudioEndRef.current) {
       console.log("Not starting recognition because:", {
         isActive,
         isMuted,
         isSpeaking,
         isProcessing,
-        isAudioProcessing: isAudioProcessingRef.current
+        isAudioProcessing: isAudioProcessingRef.current,
+        waitingForAudioEnd: waitingForAudioEndRef.current
       })
       return
     }
@@ -405,7 +420,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
     recognitionRef.current.onresult = (event: any) => {
       // Skip processing if muted or speaking
-      if (isMuted || isSpeaking || isAudioProcessingRef.current) return
+      if (isMuted || isSpeaking || isAudioProcessingRef.current || waitingForAudioEndRef.current) return
 
       lastSpeechRef.current = Date.now()
 
@@ -431,7 +446,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
       // Set a new silence detection timer
       const timer = setTimeout(() => {
-        if (transcript.trim() && Date.now() - lastSpeechRef.current >= 1500 && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+        if (transcript.trim() && Date.now() - lastSpeechRef.current >= 1500 && !isMuted && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
           stopRecognition()
           handleSendVoice(transcript)
         }
@@ -454,7 +469,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       setIsListening(false)
 
       // Try to restart after an error
-      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
+      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
         if (restartTimeoutRef.current) {
           clearTimeout(restartTimeoutRef.current)
         }
@@ -475,7 +490,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       }
 
       // Try to restart if it ended unexpectedly and we're not speaking
-      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
+      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
         if (restartTimeoutRef.current) {
           clearTimeout(restartTimeoutRef.current)
         }
@@ -590,6 +605,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     // Reset audio chunks for the next response
     audioChunksRef.current = []
     isAudioProcessingRef.current = true
+    waitingForAudioEndRef.current = true
 
     try {
       // Send the message to the server
@@ -606,6 +622,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
       // Reset audio processing state
       isAudioProcessingRef.current = false
+      waitingForAudioEndRef.current = false
 
       // Restart listening if there was an error and we're still active
       if (isActive && !isMuted) {
@@ -634,6 +651,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     // Clear audio chunks
     audioChunksRef.current = []
     isAudioProcessingRef.current = false
+    waitingForAudioEndRef.current = false
 
     // Notify the server that audio playback has finished
     notifyPlaybackFinished()
@@ -644,7 +662,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       
       // Add a delay before restarting recognition to prevent feedback
       setTimeout(() => {
-        if (!isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current) {
+        if (!isListening && !isSpeaking && !isProcessing && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
           console.log("Delayed restart of recognition after audio ended")
           setupAndStartRecognition()
         } else {
@@ -652,7 +670,8 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
             isListening,
             isSpeaking,
             isProcessing,
-            isAudioProcessing: isAudioProcessingRef.current
+            isAudioProcessing: isAudioProcessingRef.current,
+            waitingForAudioEnd: waitingForAudioEndRef.current
           })
         }
       }, 1000)
@@ -686,7 +705,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
       })
 
       // Start listening after a short delay if not speaking
-      if (!isSpeaking && !isAudioProcessingRef.current) {
+      if (!isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current) {
         setTimeout(() => {
           setupAndStartRecognition()
         }, 500)
@@ -734,6 +753,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     setConversationId(null)
     audioChunksRef.current = []
     isAudioProcessingRef.current = false
+    waitingForAudioEndRef.current = false
 
     // Call the parent component's onEndCall if provided
     if (onEndCall) {
@@ -845,13 +865,13 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
                     <span>AI Speaking...</span>
                   </>
                 )}
-                {!isMuted && !isListening && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && (
+                {!isMuted && !isListening && !isProcessing && !isSpeaking && !isAudioProcessingRef.current && !waitingForAudioEndRef.current && (
                   <>
                     <div className="h-2 w-2 rounded-full bg-slate-500"></div>
                     <span>Idle</span>
                   </>
                 )}
-                {!isMuted && !isListening && !isProcessing && !isSpeaking && isAudioProcessingRef.current && (
+                {!isMuted && !isListening && !isProcessing && !isSpeaking && (isAudioProcessingRef.current || waitingForAudioEndRef.current) && (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span>Preparing Audio...</span>
