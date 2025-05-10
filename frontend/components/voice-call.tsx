@@ -66,6 +66,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const isAudioProcessingRef = useRef<boolean>(false)
   const recognitionStartTimeRef = useRef<number>(0)
   const waitingForAudioEndRef = useRef<boolean>(false)
+  const responseCountRef = useRef<number>(0)
 
   // Auto-scroll to bottom when conversation updates
   useEffect(() => {
@@ -155,7 +156,9 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
           // Reset audio chunks for the new response
           audioChunksRef.current = []
           
-          console.log("Received response, waiting for audio chunks...")
+          // Increment response counter
+          responseCountRef.current += 1
+          console.log(`Received response #${responseCountRef.current}, waiting for audio chunks...`)
         } else if (data.type === "audio_chunk") {
           // Just collect the audio chunk, don't play it yet
           try {
@@ -167,53 +170,75 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
             
             const audioBlob = new Blob([audioBuffer], { type: "audio/wav" })
             audioChunksRef.current.push(audioBlob)
-            console.log(`Collected audio chunk #${audioChunksRef.current.length}`)
+            console.log(`Collected audio chunk #${audioChunksRef.current.length} for response #${responseCountRef.current}`)
           } catch (e) {
             console.error("Error processing audio chunk:", e)
           }
         } else if (data.type === "audio_end") {
           // Now that we have all chunks, combine and play them
-          console.log(`Audio streaming complete, playing ${audioChunksRef.current.length} combined chunks`)
-          waitingForAudioEndRef.current = false
+          console.log(`Audio streaming complete for response #${responseCountRef.current}, playing ${audioChunksRef.current.length} combined chunks`)
           
-          if (audioChunksRef.current.length > 0 && audioRef.current) {
+          if (audioChunksRef.current.length > 0) {
             try {
               // Combine all chunks into a single blob
               const combinedBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
               
               // Clean up any previous audio URL
-              if (audioRef.current.src) {
+              if (audioRef.current && audioRef.current.src) {
                 URL.revokeObjectURL(audioRef.current.src)
+                audioRef.current.src = ""
               }
               
+              // Create a new URL for the combined audio
               const audioUrl = URL.createObjectURL(combinedBlob)
-
-              // Set up audio element
-              audioRef.current.src = audioUrl
-              audioRef.current.onplay = () => {
-                setIsSpeaking(true)
-                stopRecognition()
-              }
-              audioRef.current.onended = handleAudioEnded
-              audioRef.current.onerror = (e) => {
-                console.error("Audio playback error:", e)
-                handleAudioEnded()
-              }
               
-              // Play the combined audio
-              const playPromise = audioRef.current.play()
-              if (playPromise !== undefined) {
-                playPromise.catch((err) => {
-                  console.error("Error playing combined audio:", err)
+              // Set up the audio element
+              if (audioRef.current) {
+                // Remove any existing event listeners
+                audioRef.current.onplay = null
+                audioRef.current.onended = null
+                audioRef.current.onerror = null
+                
+                // Set new event listeners
+                audioRef.current.onplay = () => {
+                  console.log(`Started playing combined audio for response #${responseCountRef.current}`)
+                  setIsSpeaking(true)
+                  stopRecognition()
+                }
+                
+                audioRef.current.onended = () => {
+                  console.log(`Finished playing combined audio for response #${responseCountRef.current}`)
                   handleAudioEnded()
-                })
+                }
+                
+                audioRef.current.onerror = (e) => {
+                  console.error(`Error playing combined audio for response #${responseCountRef.current}:`, e)
+                  handleAudioEnded()
+                }
+                
+                // Set the source and play
+                audioRef.current.src = audioUrl
+                
+                // Play the combined audio
+                const playPromise = audioRef.current.play()
+                if (playPromise !== undefined) {
+                  playPromise.catch((err) => {
+                    console.error(`Error playing combined audio for response #${responseCountRef.current}:`, err)
+                    handleAudioEnded()
+                  })
+                }
+              } else {
+                console.error("Audio element not available")
+                waitingForAudioEndRef.current = false
+                isAudioProcessingRef.current = false
               }
             } catch (e) {
-              console.error("Error playing combined audio chunks:", e)
+              console.error(`Error playing combined audio chunks for response #${responseCountRef.current}:`, e)
               handleAudioEnded()
             }
           } else {
-            console.warn("No audio chunks received or audio element not available")
+            console.warn(`No audio chunks received for response #${responseCountRef.current}`)
+            waitingForAudioEndRef.current = false
             isAudioProcessingRef.current = false
             
             // If we can't play audio, still notify server and restart listening
@@ -636,7 +661,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   }
 
   const handleAudioEnded = () => {
-    console.log("Audio playback ended")
+    console.log(`Audio playback ended for response #${responseCountRef.current}`)
     
     // Update state
     setIsSpeaking(false)
@@ -645,7 +670,16 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     if (audioRef.current) {
       const oldSrc = audioRef.current.src
       audioRef.current.src = ""
-      URL.revokeObjectURL(oldSrc)
+      
+      // Remove event handlers
+      audioRef.current.onplay = null
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      
+      // Revoke object URL
+      if (oldSrc) {
+        URL.revokeObjectURL(oldSrc)
+      }
     }
 
     // Clear audio chunks
@@ -723,6 +757,9 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const handleStartCall = () => {
     setIsActive(true)
 
+    // Reset response counter
+    responseCountRef.current = 0
+
     // Send the selected script type to the server
     setScriptType(selectedScriptType)
 
@@ -754,6 +791,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
     audioChunksRef.current = []
     isAudioProcessingRef.current = false
     waitingForAudioEndRef.current = false
+    responseCountRef.current = 0
 
     // Call the parent component's onEndCall if provided
     if (onEndCall) {
@@ -953,7 +991,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
           )}
 
           {/* Audio element */}
-          <audio ref={audioRef} onEnded={handleAudioEnded} preload="auto" />
+          <audio ref={audioRef} preload="auto" />
         </div>
       </div>
     </div>
