@@ -63,6 +63,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const isAudioProcessingRef = useRef<boolean>(false)
 
   // Auto-scroll to bottom when conversation updates
   useEffect(() => {
@@ -106,536 +107,575 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
 
     // Set up WebSocket message handler
     const unsubscribe = onWebSocketMessage((data) => {
-      if (data.type === "state") {
-        setServerState(data.state)
+      try {
+        if (data.type === "state") {
+          setServerState(data.state)
 
-        // Update our UI state based on server state
-        if (data.state === "Processing") {
-          setIsProcessing(true)
-          setIsListening(false)
-        } else if (data.state === "Speaking") {
-          setIsProcessing(false)
-          setIsSpeaking(true)
-        } else if (data.state === "Idle") {
-          setIsProcessing(false)
-          setIsSpeaking(false)
+          // Update our UI state based on server state
+          if (data.state === "Processing") {
+            setIsProcessing(true)
+            setIsListening(false)
+          } else if (data.state === "Speaking") {
+            setIsProcessing(false)
+            setIsSpeaking(true)
+          } else if (data.state === "Idle") {
+            setIsProcessing(false)
+            setIsSpeaking(false)
 
-          // Restart listening if we're active and not muted
-          if (isActive && !isMuted) {
-            setTimeout(() => {
-              setupAndStartRecognition()
-            }, 1000)
-          }
-        }
-      } else if (data.type === "transcription") {
-        setTranscription(data.text)
-      } else if (data.type === "response") {
-        // Add assistant response to conversation
-        setConversationHistory((prev) => [...prev, { role: "assistant", content: data.text }])
-        if (data.conversationId) {
-          setConversationId(data.conversationId)
-        }
-      } else if (data.type === "audio_chunk") {
-        // Handle audio chunks from the backend
-        if (audioRef.current) {
-          try {
-            // Create a blob from the base64 audio chunk
-            const audioBlob = new Blob([base64ToArrayBuffer(data.audio)], { type: "audio/wav" })
-            audioChunksRef.current.push(audioBlob)
-
-            // If this is the first chunk, start playing
-            if (!isSpeaking && audioChunksRef.current.length === 1) {
-              const audioUrl = URL.createObjectURL(audioBlob)
-              audioRef.current.src = audioUrl
-              audioRef.current.onplay = () => {
-                setIsSpeaking(true)
-                stopRecognition()
-              }
-              audioRef.current.onended = handleAudioEnded
-              audioRef.current.play().catch((err) => {
-                console.error("Error playing audio:", err)
-                handleAudioEnded()
-              })
+            // Restart listening if we're active and not muted
+            if (isActive && !isMuted && !isAudioProcessingRef.current) {
+              setTimeout(() => {
+                setupAndStartRecognition()
+              }, 1000)
             }
-          } catch (e) {
-            console.error("Error processing audio chunk:", e)
           }
-        }
-      } else if (data.type === "audio_end") {
-        // Audio streaming is complete
-        console.log("Audio streaming complete")
-
-        // If we have multiple chunks, combine them and play
-        if (audioChunksRef.current.length > 1) {
-          const combinedBlob = new Blob(audioChunksRef.current, { type: "audio/wav" })
-          const audioUrl = URL.createObjectURL(combinedBlob)
-
-          if (audioRef.current) {
-            audioRef.current.src = audioUrl
-            audioRef.current.play().catch((err) => {
-              console.error("Error playing combined audio:", err)
-              handleAudioEnded()
-            })
+        } else if (data.type === "transcription") {
+          setTranscription(data.text)
+        } else if (data.type === "response") {
+          // Add assistant response to conversation
+          setConversationHistory((prev) => [...prev, { role: "assistant", content: data.text }])
+          if (data.conversationId) {
+            setConversationId(data.conversationId)
           }
+        } else if (data.type === "audio_chunk") {
+          // Handle audio chunks from the backend
+          if (audioRef.current && !isAudioProcessingRef.current) {
+            try {
+              isAudioProcessingRef.current = true;
+              
+              // Create a blob from the base64 audio chunk
+              const audioBuffer = base64ToArrayBuffer(data.audio);
+              if (audioBuffer.byteLength === 0) {
+                console.warn("Received empty audio chunk, skipping");
+                return;
+              }
+              
+              const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
+              audioChunksRef.current.push(audioBlob);
+
+              // If this is the first chunk, start playing
+              if (!isSpeaking && audioChunksRef.current.length === 1) {
+                const audioUrl = URL.createObjectURL(audioBlob);
+                audioRef.current.src = audioUrl;
+                audioRef.current.onplay = () => {
+                  setIsSpeaking(true);
+                  stopRecognition();
+                };
+                audioRef.current.onended = handleAudioEnded;
+                audioRef.current.onerror = (e) => {
+                  console.error("Audio playback error:", e);
+                  handleAudioEnded();
+                };
+                
+                const playPromise = audioRef.current.play();
+                if (playPromise !== undefined) {
+                  playPromise.catch((err) => {
+                    console.error("Error playing audio:", err);
+                    handleAudioEnded();
+                  });
+                }
+              }
+            } catch (e) {
+              console.error("Error processing audio chunk:", e);
+              isAudioProcessingRef.current = false;
+            }
+          }
+        } else if (data.type === "audio_end") {
+          // Audio streaming is complete
+          console.log("Audio streaming complete");
+          isAudioProcessingRef.current = false;
+
+          // If we have multiple chunks, combine them and play
+          if (audioChunksRef.current.length > 1 && audioRef.current) {
+            try {
+              const combinedBlob = new Blob(audioChunksRef.current, { type: "audio/wav" });
+              const audioUrl = URL.createObjectURL(combinedBlob);
+
+              audioRef.current.src = audioUrl;
+              audioRef.current.onplay = () => {
+                setIsSpeaking(true);
+                stopRecognition();
+              };
+              audioRef.current.onended = handleAudioEnded;
+              
+              const playPromise = audioRef.current.play();
+              if (playPromise !== undefined) {
+                playPromise.catch((err) => {
+                  console.error("Error playing combined audio:", err);
+                  handleAudioEnded();
+                });
+              }
+            } catch (e) {
+              console.error("Error playing combined audio chunks:", e);
+              handleAudioEnded();
+            }
+          }
+        } else if (data.type === "info") {
+          toast({
+            title: "Info",
+            description: data.message,
+          });
+        } else if (data.type === "error") {
+          toast({
+            title: "Error",
+            description: data.message,
+            variant: "destructive",
+          });
         }
-      } else if (data.type === "info") {
-        toast({
-          title: "Info",
-          description: data.message,
-        })
-      } else if (data.type === "error") {
-        toast({
-          title: "Error",
-          description: data.message,
-          variant: "destructive",
-        })
+      } catch (error) {
+        console.error("Error handling WebSocket message:", error);
       }
-    })
+    });
 
     return () => {
-      unsubscribe()
-    }
-  }, [])
+      unsubscribe();
+    };
+  }, []);
 
   // Initialize speech recognition and set up keep-alive
   useEffect(() => {
-    if (typeof window !== "undefined" && isActive && !isMuted && !isSpeaking) {
-      console.log("Setting up initial speech recognition")
-      setupAndStartRecognition()
+    if (typeof window !== "undefined" && isActive && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+      console.log("Setting up initial speech recognition");
+      setupAndStartRecognition();
 
       // Set up a keep-alive interval
       keepAliveIntervalRef.current = setInterval(() => {
-        if (!isListening && !isProcessing && !isSpeaking && isActive && !isMuted) {
-          console.log("Keep-alive: restarting speech recognition")
-          setupAndStartRecognition()
+        if (!isListening && !isProcessing && !isSpeaking && isActive && !isMuted && !isAudioProcessingRef.current) {
+          console.log("Keep-alive: restarting speech recognition");
+          setupAndStartRecognition();
         }
-      }, 10000) // Check every 10 seconds
+      }, 10000); // Check every 10 seconds
     }
 
     return () => {
-      cleanupSpeechRecognition()
+      cleanupSpeechRecognition();
       if (keepAliveIntervalRef.current) {
-        clearInterval(keepAliveIntervalRef.current)
-        keepAliveIntervalRef.current = null
+        clearInterval(keepAliveIntervalRef.current);
+        keepAliveIntervalRef.current = null;
       }
-    }
-  }, [isActive, isSpeaking])
+    };
+  }, [isActive, isSpeaking]);
 
   // Handle mute state changes
   useEffect(() => {
     if (isMuted) {
       // When muted, stop recognition
-      stopRecognition()
+      stopRecognition();
 
       // Also stop any playing audio
       if (audioRef.current && audioRef.current.paused === false) {
-        audioRef.current.pause()
-        setIsSpeaking(false)
+        audioRef.current.pause();
+        setIsSpeaking(false);
       }
-    } else if (isActive && !isProcessing && !isSpeaking) {
+    } else if (isActive && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
       // When unmuted, start recognition only if not speaking
-      console.log("Unmuted, starting recognition")
-      setupAndStartRecognition()
+      console.log("Unmuted, starting recognition");
+      setupAndStartRecognition();
     }
-  }, [isMuted, isSpeaking])
+  }, [isMuted, isSpeaking]);
 
   // Add effect to stop recognition when speaking starts
   useEffect(() => {
     if (isSpeaking) {
-      console.log("AI is speaking - stopping microphone")
-      stopRecognition()
-    } else if (isActive && !isMuted && !isProcessing && !isSpeaking) {
-      console.log("AI finished speaking - restarting microphone")
+      console.log("AI is speaking - stopping microphone");
+      stopRecognition();
+    } else if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
+      console.log("AI finished speaking - restarting microphone");
       // Small delay to ensure audio playback is fully complete
       setTimeout(() => {
-        setupAndStartRecognition()
-      }, 500)
+        setupAndStartRecognition();
+      }, 1000);
     }
-  }, [isSpeaking])
+  }, [isSpeaking]);
 
   // Track call duration
   useEffect(() => {
     if (isActive) {
       // Start call duration timer
-      setCallDuration(0)
+      setCallDuration(0);
       callDurationTimerRef.current = setInterval(() => {
-        setCallDuration((prev) => prev + 1)
-      }, 1000)
+        setCallDuration((prev) => prev + 1);
+      }, 1000);
     } else {
       // Clear call duration timer
       if (callDurationTimerRef.current) {
-        clearInterval(callDurationTimerRef.current)
-        callDurationTimerRef.current = null
+        clearInterval(callDurationTimerRef.current);
+        callDurationTimerRef.current = null;
       }
     }
 
     return () => {
       if (callDurationTimerRef.current) {
-        clearInterval(callDurationTimerRef.current)
-        callDurationTimerRef.current = null
+        clearInterval(callDurationTimerRef.current);
+        callDurationTimerRef.current = null;
       }
-    }
-  }, [isActive])
+    };
+  }, [isActive]);
 
   const setupAndStartRecognition = () => {
-    if (!isActive || isMuted || isSpeaking || isProcessing) {
+    if (!isActive || isMuted || isSpeaking || isProcessing || isAudioProcessingRef.current) {
       console.log("Not starting recognition because:", {
         isActive,
         isMuted,
         isSpeaking,
         isProcessing,
-      })
-      return
+        isAudioProcessing: isAudioProcessingRef.current
+      });
+      return;
     }
 
-    console.log("Setting up speech recognition")
+    console.log("Setting up speech recognition");
 
     // Clean up any existing recognition
-    stopRecognition()
+    stopRecognition();
 
     // Create a new recognition instance
-    recognitionRef.current = createSpeechRecognition()
+    recognitionRef.current = createSpeechRecognition();
 
     if (!recognitionRef.current) {
-      console.error("Failed to create speech recognition")
-      return
+      console.error("Failed to create speech recognition");
+      return;
     }
 
     // Configure recognition
-    recognitionRef.current.continuous = true
-    recognitionRef.current.interimResults = true
+    recognitionRef.current.continuous = true;
+    recognitionRef.current.interimResults = true;
 
     // Set up event handlers
     recognitionRef.current.onstart = () => {
-      console.log("Speech recognition started")
-      setIsListening(true)
-      setListeningDuration(0)
+      console.log("Speech recognition started");
+      setIsListening(true);
+      setListeningDuration(0);
 
       // Start timer for listening duration
       if (listeningTimerRef.current) {
-        clearInterval(listeningTimerRef.current)
+        clearInterval(listeningTimerRef.current);
       }
 
       listeningTimerRef.current = setInterval(() => {
-        setListeningDuration((prev) => prev + 1)
-      }, 1000)
-    }
+        setListeningDuration((prev) => prev + 1);
+      }, 1000);
+    };
 
     recognitionRef.current.onresult = (event: any) => {
       // Skip processing if muted or speaking
-      if (isMuted || isSpeaking) return
+      if (isMuted || isSpeaking || isAudioProcessingRef.current) return;
 
-      lastSpeechRef.current = Date.now()
+      lastSpeechRef.current = Date.now();
 
       // Get the transcript
-      let finalTranscript = ""
-      let interimTranscript = ""
+      let finalTranscript = "";
+      let interimTranscript = "";
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript
+          finalTranscript += event.results[i][0].transcript;
         } else {
-          interimTranscript += event.results[i][0].transcript
+          interimTranscript += event.results[i][0].transcript;
         }
       }
 
-      const transcript = finalTranscript || interimTranscript
-      setTranscription(transcript)
+      const transcript = finalTranscript || interimTranscript;
+      setTranscription(transcript);
 
       // Reset silence detection timer
       if (silenceTimer) {
-        clearTimeout(silenceTimer)
+        clearTimeout(silenceTimer);
       }
 
       // Set a new silence detection timer
       const timer = setTimeout(() => {
-        if (transcript.trim() && Date.now() - lastSpeechRef.current >= 1500 && !isMuted && !isSpeaking) {
-          stopRecognition()
-          handleSendVoice(transcript)
+        if (transcript.trim() && Date.now() - lastSpeechRef.current >= 1500 && !isMuted && !isSpeaking && !isAudioProcessingRef.current) {
+          stopRecognition();
+          handleSendVoice(transcript);
         }
-      }, 1500)
+      }, 1500);
 
-      setSilenceTimer(timer)
-    }
+      setSilenceTimer(timer);
+    };
 
     recognitionRef.current.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error)
+      console.error("Speech recognition error:", event.error);
 
       if (event.error !== "no-speech") {
         toast({
           title: "Speech Recognition Error",
           description: `An error occurred: ${event.error}`,
           variant: "destructive",
-        })
+        });
       }
 
-      setIsListening(false)
+      setIsListening(false);
 
       // Try to restart after an error
-      if (isActive && !isMuted && !isProcessing && !isSpeaking) {
+      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
         if (restartTimeoutRef.current) {
-          clearTimeout(restartTimeoutRef.current)
+          clearTimeout(restartTimeoutRef.current);
         }
 
         restartTimeoutRef.current = setTimeout(() => {
-          setupAndStartRecognition()
-        }, 1000)
+          setupAndStartRecognition();
+        }, 1000);
       }
-    }
+    };
 
     recognitionRef.current.onend = () => {
-      console.log("Speech recognition ended")
-      setIsListening(false)
+      console.log("Speech recognition ended");
+      setIsListening(false);
 
       if (listeningTimerRef.current) {
-        clearInterval(listeningTimerRef.current)
-        listeningTimerRef.current = null
+        clearInterval(listeningTimerRef.current);
+        listeningTimerRef.current = null;
       }
 
       // Try to restart if it ended unexpectedly and we're not speaking
-      if (isActive && !isMuted && !isProcessing && !isSpeaking) {
+      if (isActive && !isMuted && !isProcessing && !isSpeaking && !isAudioProcessingRef.current) {
         if (restartTimeoutRef.current) {
-          clearTimeout(restartTimeoutRef.current)
+          clearTimeout(restartTimeoutRef.current);
         }
 
         restartTimeoutRef.current = setTimeout(() => {
-          console.log("Restarting recognition after it ended unexpectedly")
-          setupAndStartRecognition()
-        }, 1000)
+          console.log("Restarting recognition after it ended unexpectedly");
+          setupAndStartRecognition();
+        }, 1000);
       }
-    }
+    };
 
     // Start recognition
     try {
-      console.log("Starting speech recognition")
-      recognitionRef.current.start()
+      console.log("Starting speech recognition");
+      recognitionRef.current.start();
     } catch (error) {
-      console.error("Error starting speech recognition:", error)
+      console.error("Error starting speech recognition:", error);
 
       // If already started, just update state
       if (error instanceof Error && error.message.includes("already started")) {
-        setIsListening(true)
+        setIsListening(true);
       } else {
         // Try again after a delay
         if (restartTimeoutRef.current) {
-          clearTimeout(restartTimeoutRef.current)
+          clearTimeout(restartTimeoutRef.current);
         }
 
         restartTimeoutRef.current = setTimeout(() => {
-          setupAndStartRecognition()
-        }, 1000)
+          setupAndStartRecognition();
+        }, 1000);
       }
     }
-  }
+  };
 
   const stopRecognition = () => {
     if (recognitionRef.current) {
       try {
         // Remove event handlers to prevent callbacks
-        const tempRecognition = recognitionRef.current
-        recognitionRef.current = null
+        const tempRecognition = recognitionRef.current;
+        recognitionRef.current = null;
 
-        tempRecognition.onend = null
-        tempRecognition.onstart = null
-        tempRecognition.onerror = null
-        tempRecognition.onresult = null
+        tempRecognition.onend = null;
+        tempRecognition.onstart = null;
+        tempRecognition.onerror = null;
+        tempRecognition.onresult = null;
 
-        tempRecognition.stop()
-        console.log("Speech recognition stopped")
+        tempRecognition.stop();
+        console.log("Speech recognition stopped");
       } catch (e) {
-        console.error("Error stopping speech recognition:", e)
+        console.error("Error stopping speech recognition:", e);
       }
     }
 
-    setIsListening(false)
+    setIsListening(false);
 
     if (listeningTimerRef.current) {
-      clearInterval(listeningTimerRef.current)
-      listeningTimerRef.current = null
+      clearInterval(listeningTimerRef.current);
+      listeningTimerRef.current = null;
     }
 
     if (silenceTimer) {
-      clearTimeout(silenceTimer)
-      setSilenceTimer(null)
+      clearTimeout(silenceTimer);
+      setSilenceTimer(null);
     }
-  }
+  };
 
   const cleanupSpeechRecognition = () => {
-    stopRecognition()
+    stopRecognition();
 
     if (restartTimeoutRef.current) {
-      clearTimeout(restartTimeoutRef.current)
-      restartTimeoutRef.current = null
+      clearTimeout(restartTimeoutRef.current);
+      restartTimeoutRef.current = null;
     }
-  }
+  };
 
   // Generate audio visualization when speaking
   useEffect(() => {
     if (isSpeaking) {
       const generateVisualization = () => {
-        const newVisualization = Array.from({ length: 50 }, () => Math.random() * 50 + 10)
-        setAudioVisualization(newVisualization)
-        animationFrameRef.current = requestAnimationFrame(generateVisualization)
-      }
+        const newVisualization = Array.from({ length: 50 }, () => Math.random() * 50 + 10);
+        setAudioVisualization(newVisualization);
+        animationFrameRef.current = requestAnimationFrame(generateVisualization);
+      };
 
-      generateVisualization()
+      generateVisualization();
 
       return () => {
         if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current)
+          cancelAnimationFrame(animationFrameRef.current);
         }
-      }
+      };
     } else {
-      setAudioVisualization([])
+      setAudioVisualization([]);
       if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
+        cancelAnimationFrame(animationFrameRef.current);
       }
     }
-  }, [isSpeaking])
+  }, [isSpeaking]);
 
   const handleSendVoice = async (text: string) => {
-    if (!text.trim() || !isActive) return
+    if (!text.trim() || !isActive) return;
 
-    setIsProcessing(true)
-    const currentText = text.trim()
+    setIsProcessing(true);
+    const currentText = text.trim();
 
     // Add user message to conversation immediately
-    setConversationHistory((prev) => [...prev, { role: "user", content: currentText }])
+    setConversationHistory((prev) => [...prev, { role: "user", content: currentText }]);
 
     // Clear transcription
-    setTranscription("")
+    setTranscription("");
 
     // Reset audio chunks for the next response
-    audioChunksRef.current = []
+    audioChunksRef.current = [];
+    isAudioProcessingRef.current = false;
 
     try {
       // Send the message to the server
-      await sendConversationMessage(currentText, conversationId)
+      await sendConversationMessage(currentText, conversationId);
 
       // Note: We don't need to handle the response here as it will come through WebSocket
     } catch (error: any) {
-      console.error("Conversation error:", error)
+      console.error("Conversation error:", error);
       toast({
         title: "Conversation Error",
         description: `Failed to get response: ${error.message}`,
         variant: "destructive",
-      })
+      });
 
       // Restart listening if there was an error and we're still active
-      if (isActive && !isMuted) {
+      if (isActive && !isMuted && !isAudioProcessingRef.current) {
         setTimeout(() => {
-          setupAndStartRecognition()
-        }, 1000)
+          setupAndStartRecognition();
+        }, 1000);
       }
     } finally {
-      setIsProcessing(false)
+      setIsProcessing(false);
     }
-  }
+  };
 
   const handleAudioEnded = () => {
-    console.log("Audio playback ended")
-    setIsSpeaking(false)
+    console.log("Audio playback ended");
+    setIsSpeaking(false);
 
     // Clear audio chunks
-    audioChunksRef.current = []
+    audioChunksRef.current = [];
+    isAudioProcessingRef.current = false;
 
     // Notify the server that audio playback has finished
-    notifyPlaybackFinished()
+    notifyPlaybackFinished();
 
     // Auto-start listening again after AI finishes speaking if we're still active
     if (isActive && !isMuted) {
       // Add a delay before restarting recognition to prevent feedback
       setTimeout(() => {
-        console.log("Restarting recognition after audio ended")
-        setupAndStartRecognition()
-      }, 1000)
+        console.log("Restarting recognition after audio ended");
+        setupAndStartRecognition();
+      }, 1000);
     }
-  }
+  };
 
   const toggleMute = () => {
-    const newMutedState = !isMuted
-    setIsMuted(newMutedState)
+    const newMutedState = !isMuted;
+    setIsMuted(newMutedState);
 
     if (newMutedState) {
       // Muting
       toast({
         title: "Microphone Muted",
         description: "The system will not listen to your voice until unmuted.",
-      })
+      });
 
       // Stop listening immediately
-      stopRecognition()
+      stopRecognition();
 
       // Also stop any playing audio
       if (audioRef.current) {
-        audioRef.current.pause()
-        setIsSpeaking(false)
+        audioRef.current.pause();
+        setIsSpeaking(false);
       }
     } else {
       // Unmuting
       toast({
         title: "Microphone Unmuted",
         description: "The system will now listen to your voice.",
-      })
+      });
 
       // Start listening after a short delay if not speaking
-      if (!isSpeaking) {
+      if (!isSpeaking && !isAudioProcessingRef.current) {
         setTimeout(() => {
-          setupAndStartRecognition()
-        }, 500)
+          setupAndStartRecognition();
+        }, 500);
       }
     }
-  }
+  };
 
   // Function to handle script type selection
   const handleScriptTypeChange = (scriptType: string) => {
-    setSelectedScriptType(scriptType)
-    setIsDropdownOpen(false)
-  }
+    setSelectedScriptType(scriptType);
+    setIsDropdownOpen(false);
+  };
 
   // Function to start the call
   const handleStartCall = () => {
-    setIsActive(true)
+    setIsActive(true);
 
     // Send the selected script type to the server
-    setScriptType(selectedScriptType)
+    setScriptType(selectedScriptType);
 
     // Start listening after a short delay
     setTimeout(() => {
-      setupAndStartRecognition()
-    }, 500)
+      setupAndStartRecognition();
+    }, 500);
 
     toast({
       title: "Call Started",
       description: `Using ${SCRIPT_TYPES.find((s) => s.id === selectedScriptType)?.name} script.`,
-    })
-  }
+    });
+  };
 
   // Function to handle ending the call
   const handleEndCall = () => {
-    setIsActive(false)
-    cleanupSpeechRecognition()
+    setIsActive(false);
+    cleanupSpeechRecognition();
 
     // Stop any playing audio
     if (audioRef.current) {
-      audioRef.current.pause()
-      setIsSpeaking(false)
+      audioRef.current.pause();
+      setIsSpeaking(false);
     }
 
     // Reset conversation
-    setConversationHistory([])
-    setConversationId(null)
+    setConversationHistory([]);
+    setConversationId(null);
+    audioChunksRef.current = [];
+    isAudioProcessingRef.current = false;
 
     // Call the parent component's onEndCall if provided
     if (onEndCall) {
-      onEndCall()
+      onEndCall();
     }
 
     toast({
       title: "Call Ended",
       description: "Voice call has been terminated.",
-    })
-  }
+    });
+  };
 
   return (
     <div className="p-6 bg-slate-900 min-h-screen text-white">
