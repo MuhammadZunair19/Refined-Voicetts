@@ -24,7 +24,7 @@ export function initializeWebSocket(callbacks?: {
   }
 
   // Create new WebSocket connection
-  socket = new WebSocket("wss://early-guiding-feline.ngrok-free.app")
+  socket = new WebSocket("ws://localhost:8080")
 
   // Store the socket in window for access from other functions
   if (typeof window !== "undefined") {

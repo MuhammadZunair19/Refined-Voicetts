@@ -1,5 +1,71 @@
+# Refined VoiceTTS
 
-# Refined-Voicetts
+A voice-based AI conversation system with a sophisticated frontend and Python backend.
+
+## Setup Instructions
+
+### Backend Setup
+
+1. Navigate to the backend directory:
+```bash
+cd backend/chunking-test
+```
+
+2. Install required Python dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Start the backend WebSocket server:
+```bash
+python main.py
+```
+
+The backend will run on `ws://localhost:8080` and provide WebSocket-based communication for voice transcription, AI responses, and text-to-speech.
+
+### Frontend Setup
+
+1. Navigate to the frontend directory:
+```bash
+cd frontend
+```
+
+2. Install the required Node.js dependencies:
+```bash
+npm install
+```
+
+3. Start the development server:
+```bash
+npm run dev
+```
+
+4. Open the frontend in your browser:
+```
+http://localhost:3000
+```
+
+## Usage
+
+1. Navigate to the call page by clicking "Start Call" on the home page
+2. Allow microphone access when prompted
+3. Click "Start Call" on the call page to begin the conversation
+4. Talk to the AI and receive voice responses
+
+## Technical Details
+
+- Frontend: Next.js with TypeScript and Tailwind CSS
+- Backend: Python using WebSockets, Groq API, and XTTS for text-to-speech
+- Communication: WebSocket protocol for real-time bidirectional communication
+- Voice Recognition: Browser's built-in SpeechRecognition API and Groq's Whisper API
+- Text-to-Speech: XTTS model for high-quality voice synthesis
+
+## Troubleshooting
+
+- Ensure the backend is running before starting a call from the frontend
+- Check console logs for any WebSocket connection errors
+- Make sure your browser supports the SpeechRecognition API (Chrome, Edge recommended)
+- Allow microphone access permissions
 
 ## ✅ Required Dependencies (Before Installing)
 

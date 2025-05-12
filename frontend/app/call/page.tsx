@@ -226,7 +226,7 @@ export default function CallPage() {
                   </h2>
                   <p className="text-slate-600 dark:text-slate-400 text-center max-w-md mb-8">
                     Click the Start Call button to begin talking with the AI assistant. The system will automatically
-                    listen to you and respond.
+                    listen to you and respond using Truck Dispatcher AI.
                   </p>
 
                   <button

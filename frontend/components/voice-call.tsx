@@ -19,8 +19,8 @@ import { cn, formatTime } from "@/lib/utils"
 const SCRIPT_TYPES = [
   {
     id: "truck_dispatch",
-    name: "GLOBAL TECH",
-    description: "Fronting Only - Qualify leads and transfer to closers",
+    name: "Truck Dispatcher",
+    description: "Expert truck dispatcher providing details about logistics and trucking",
   },
 ]
 
@@ -43,7 +43,7 @@ export const VoiceCall = ({ onEndCall }: { onEndCall?: () => void }) => {
   const [isActive, setIsActive] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [serverState, setServerState] = useState<string>("Idle")
-  const [selectedScriptType, setSelectedScriptType] = useState<string>("reliant_bpo")
+  const [selectedScriptType, setSelectedScriptType] = useState<string>("truck_dispatch")
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [callDuration, setCallDuration] = useState(0)
   const callDurationTimerRef = useRef<NodeJS.Timeout | null>(null)
